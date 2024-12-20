@@ -3,11 +3,18 @@ from allosaurus.app import read_recognizer
 from pydub import AudioSegment
 import io
 import tempfile
+from pathlib import Path
+
 
 # Initialize recognizer
 @st.cache_data
 def LoadRecognizer():
-    recognizer = read_recognizer()
+    # Path to the directory containing your model
+    model_directory = Path(r".//").resolve()
+
+    # Explicitly specify the model name if needed
+    model_name = "uni2005"  # Replace with the correct model name
+    recognizer = read_recognizer(inference_config_or_name=model_name, alt_model_path=model_directory)
     return recognizer
 
 # Title
