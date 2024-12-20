@@ -13,9 +13,11 @@ def LoadRecognizer():
     model_directory = Path(r".//").resolve()
 
     # Explicitly specify the model name if needed
-    model_name = "uni2005"  # Replace with the correct model name
-    recognizer = read_recognizer(inference_config_or_name=model_name, alt_model_path=model_directory)
-    return recognizer
+    universal_model_name = "uni2005"  
+    english_model_name = "eng2102"  
+    universal_recognizer = read_recognizer(inference_config_or_name=universal_model_name, alt_model_path=model_directory)
+    english_recognizer = read_recognizer(inference_config_or_name=english_model_name, alt_model_path=model_directory)
+    return universal_recognizer,english_recognizer
 
 
 def AudioPreprocessor(Utterance):
@@ -61,14 +63,20 @@ if ReferenceUtterance is not None:
             LANGUAGE_ID = "arz"
 
         # Load the recognizer
-        recognizer = LoadRecognizer()
+        universal_recognizer,english_recognizer = LoadRecognizer()
 
 
         test_audio_path = AudioPreprocessor(TestUtterance)
 
         try:
-            ref_result = recognizer.recognize(reference_audio_path, lang_id=LANGUAGE_ID)  # Use "arb" for Arabic
-            test_result = recognizer.recognize(test_audio_path, lang_id=LANGUAGE_ID)  # Use "arb" for Arabic
+            if language == "English":
+                ref_result = english_recognizer.recognize(reference_audio_path, lang_id=LANGUAGE_ID)  
+                test_result = english_recognizer.recognize(test_audio_path, lang_id=LANGUAGE_ID)  
+            else:
+                ref_result = universal_recognizer.recognize(reference_audio_path, lang_id=LANGUAGE_ID)  
+                test_result = universal_recognizer.recognize(test_audio_path, lang_id=LANGUAGE_ID)  
+
+
             st.write("Reference Utterance Phonemes:")
             st.write(ref_result)
             st.write("Test Utterance Phonemes:")
