@@ -1,5 +1,6 @@
 allosaurus==1.0.2
-matplotlib
+librosa==0.10.2.post1
+matplotlib==3.10.0
 numpy
 pydub==0.25.1
 scipy==1.14.1

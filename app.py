@@ -1,22 +1,30 @@
+#####################################       Start Start Start       ################################
+
 import streamlit as st
+import numpy as np
+import librosa
+import librosa.display
+import matplotlib.pyplot as plt
 from allosaurus.app import read_recognizer
 from pydub import AudioSegment
 import io
 import tempfile
 from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-from typing import List, Dict, Tuple, Optional
+from scipy.spatial.distance import cdist
 
-# Initialize recognizer
+# Initialize recognizer (cached)
 @st.cache_data
 def LoadRecognizer():
-    model_directory = Path(r".//").resolve()
-    universal_model_name = "uni2005"  
-    english_model_name = "eng2102"  
-    universal_recognizer = read_recognizer(inference_config_or_name=universal_model_name, alt_model_path=model_directory)
-    english_recognizer = read_recognizer(inference_config_or_name=english_model_name, alt_model_path=model_directory)
-    return universal_recognizer, english_recognizer
+    model_directory = Path(r".").resolve()  # Adjust path if needed
+    universal_model_name = "uni2005"
+    english_model_name = "eng2102"
+    try:
+        universal_recognizer = read_recognizer(inference_config_or_name=universal_model_name, alt_model_path=model_directory)
+        english_recognizer = read_recognizer(inference_config_or_name=english_model_name, alt_model_path=model_directory)
+        return universal_recognizer, english_recognizer
+    except Exception as e:
+        st.error(f"Error loading recognizers: {e}. Ensure Allosaurus models are available.")
+        return None, None # Return None values if loading fails
 
 def AudioPreprocessor(Utterance):
     audio_data = Utterance.getbuffer()
@@ -24,203 +32,140 @@ def AudioPreprocessor(Utterance):
     st.write(f"Duration: {audio.duration_seconds} seconds")
     st.write(f"Channels: {audio.channels}")
     st.write(f"Sample width: {audio.sample_width} bytes")
-
     with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav_file:
         temp_wav_file_path = temp_wav_file.name
         audio.export(temp_wav_file, format="wav")
         return temp_wav_file_path
 
-def plot_spectrogram(audio_path):
-    from scipy.io import wavfile
-    from scipy.signal import spectrogram
-
-    sample_rate, audio_data = wavfile.read(audio_path)
-    frequencies, times, spectrogram_data = spectrogram(audio_data, fs=sample_rate)
-
-    plt.figure(figsize=(10, 6))
-    plt.imshow(10 * np.log10(spectrogram_data), aspect='auto', cmap='viridis', origin='lower', 
-               extent=[times.min(), times.max(), frequencies.min(), frequencies.max()])
-    plt.colorbar(label='Power (dB)')
-    plt.title('Spectrogram')
-    plt.ylabel('Frequency (Hz)')
-    plt.xlabel('Time (s)')
+def plot_spectrogram(audio_path, title):
+    y, sr = librosa.load(audio_path)
+    D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
+    plt.figure(figsize=(10, 4))
+    librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log')
+    plt.colorbar(format='%+2.0f dB')
+    plt.title(title)
+    plt.tight_layout()
     st.pyplot(plt)
-    plt.close()
 
-def recognize_phonemes(recognizer, file_path: str, lang_id: str) -> Optional[List[Dict]]:
-    if not Path(file_path).exists():
-        st.error(f"Error: File {file_path} not found.")
-        return None
+def extract_mfcc(audio_path, sr=16000, n_mfcc=13, win_len=400, hop_len=160):
+    y, sr = librosa.load(audio_path, sr=sr)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=win_len, hop_length=hop_len, window='hamming')
+    return mfcc.T
 
-    try:
-        result = recognizer.recognize(file_path, lang_id=lang_id, timestamp=True)
-        phoneme_data = []
-        for entry in result.splitlines():
-            parts = entry.split(" ")
-            if len(parts) == 3:
-                start_time = float(parts[0])
-                end_time = float(parts[1])
-                phoneme = parts[2]
-                phoneme_data.append({"phoneme": phoneme, "start": start_time, "end": end_time})
-        return phoneme_data
-    except Exception as e:
-        st.error(f"Error processing {file_path}: {str(e)}")
-        return None
+def calculate_distance(mfcc1, mfcc2):
+    """Calculates the cosine distance between two MFCC sequences."""
+    min_len = min(len(mfcc1), len(mfcc2))
+    distance = cdist(mfcc1[:min_len], mfcc2[:min_len], metric='cosine').diagonal() # Use diagonal for frame-wise comparison
+    return distance
 
-def align_sequences(teacher_phonemes: List[Dict], student_phonemes: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
-    def dtw_distance(seq1, seq2):
-        n, m = len(seq1), len(seq2)
-        dtw_matrix = np.full((n + 1, m + 1), np.inf)
-        dtw_matrix[0, 0] = 0
+def plot_distance_with_phonemes(distance, threshold, ref_phonemes_with_time, test_phonemes_with_time):
+    """Plots the distance with threshold and phoneme alignment."""
 
-        for i in range(1, n + 1):
-            for j in range(1, m + 1):
-                cost = 0 if seq1[i-1].get('phoneme') == seq2[j-1].get('phoneme') else 1
-                dtw_matrix[i, j] = cost + min(dtw_matrix[i-1, j],
-                                              dtw_matrix[i, j-1],
-                                              dtw_matrix[i-1, j-1])
+    num_frames = len(distance)
+    frame_idx = np.arange(num_frames)
+    time_per_frame = 0.01  # Assuming 10ms per frame (hop length)
 
-        return dtw_matrix
+    plt.figure(figsize=(12, 6))  # Increased figure height for phoneme labels
 
-    matrix = dtw_distance(teacher_phonemes, student_phonemes)
-    aligned_teacher = []
-    aligned_student = []
+    # Plot the distance
+    # Highlight sections of the curve above the threshold
+    above_threshold = distance > threshold
+    plt.plot(frame_idx, distance, label='Distance', color='blue')
+    plt.fill_between(frame_idx, distance, threshold, where=above_threshold, color='red', alpha=0.5, label='Above Threshold')
+    plt.axhline(y=threshold, color='r', linestyle='--', label=f'Threshold ({threshold:.2f})')
 
-    i, j = len(teacher_phonemes), len(student_phonemes)
-    while i > 0 or j > 0:
-        if i > 0 and j > 0 and matrix[i, j] == matrix[i-1, j-1]:
-            aligned_teacher.insert(0, teacher_phonemes[i-1])
-            aligned_student.insert(0, student_phonemes[j-1])
-            i -= 1
-            j -= 1
-        elif i > 0 and (j == 0 or matrix[i, j] == matrix[i-1, j]):
-            aligned_teacher.insert(0, teacher_phonemes[i-1])
-            aligned_student.insert(0, {"phoneme": "-", "start": 0, "end": 0})
-            i -= 1
-        else:
-            aligned_teacher.insert(0, {"phoneme": "-", "start": 0, "end": 0})
-            aligned_student.insert(0, student_phonemes[j-1])
-            j -= 1
+    # Add phoneme labels with timestamps
+    y_offset = -0.1  # Adjust vertical offset for phoneme labels
+    for phoneme_data in ref_phonemes_with_time:
+        try:
+            start_time, duration, phoneme = phoneme_data.split()
+            start_time = float(start_time)
+            end_time = start_time + float(duration)
+            start_frame = int(start_time / time_per_frame)
+            end_frame = int(end_time / time_per_frame)
 
-    return aligned_teacher, aligned_student
+            if 0 <= start_frame < num_frames:
+                mid_frame = (start_frame + end_frame) // 2
+                plt.text(mid_frame, y_offset, phoneme, ha='center', fontsize=16, color='blue')
+        except ValueError:
+            print(f"Skipping invalid phoneme data: {phoneme_data}")
+            continue
 
-def analyze_differences(teacher_seq: List[Dict], student_seq: List[Dict]) -> Dict:
-    analysis = {
-        'total_phonemes': len(teacher_seq),
-        'correct_phonemes': 0,
-        'errors': [],
-        'timing_differences': [],
-        'missing_phonemes': [],
-        'extra_phonemes': [],
-        'accuracy_percentage': 0
-    }
+    y_offset = -0.2  # Adjust offset for test phonemes
+    for phoneme_data in test_phonemes_with_time:
+        try:
+            start_time, duration, phoneme = phoneme_data.split()
+            start_time = float(start_time)
+            end_time = start_time + float(duration)
+            start_frame = int(start_time / time_per_frame)
+            end_frame = int(end_time / time_per_frame)
 
-    for i, (teacher, student) in enumerate(zip(teacher_seq, student_seq)):
-        if teacher['phoneme'] == student['phoneme']:
-            analysis['correct_phonemes'] += 1
-        else:
-            if teacher['phoneme'] == '-':
-                analysis['extra_phonemes'].append({
-                    'position': i,
-                    'phoneme': student['phoneme'],
-                    'timestamp': f"{student['start']:.2f}-{student['end']:.2f}"
-                })
-            elif student['phoneme'] == '-':
-                analysis['missing_phonemes'].append({
-                    'position': i,
-                    'phoneme': teacher['phoneme'],
-                    'timestamp': f"{teacher['start']:.2f}-{teacher['end']:.2f}"
-                })
-            else:
-                analysis['errors'].append({
-                    'position': i,
-                    'expected': teacher['phoneme'],
-                    'pronounced': student['phoneme'],
-                    'timestamp': f"{student['start']:.2f}-{student['end']:.2f}"
-                })
+            if 0 <= start_frame < num_frames:
+                mid_frame = (start_frame + end_frame) // 2
+                plt.text(mid_frame, y_offset, phoneme, ha='center', fontsize=16, color='green')
+        except ValueError:
+            print(f"Skipping invalid phoneme data: {phoneme_data}")
+            continue
 
-        if teacher['phoneme'] != '-' and student['phoneme'] != '-':
-            timing_diff = abs(teacher['end'] - teacher['start'] - 
-                              (student['end'] - student['start']))
-            if timing_diff > 0.1:
-                analysis['timing_differences'].append({
-                    'position': i,
-                    'phoneme': teacher['phoneme'],
-                    'teacher_duration': f"{teacher['end'] - teacher['start']:.2f}",
-                    'student_duration': f"{student['end'] - student['start']:.2f}"
-                })
+    plt.xlabel('Frame Index')
+    plt.ylabel('Cosine Distance')
+    plt.title('Frame-wise Cosine Distance with Phoneme Alignment')
+    plt.legend()
+    plt.tight_layout()
+    st.pyplot(plt)
 
-    valid_phonemes = len(teacher_seq) - teacher_seq.count({'phoneme': '-', 'start': 0, 'end': 0})
-    if valid_phonemes > 0:
-        analysis['accuracy_percentage'] = (analysis['correct_phonemes'] / valid_phonemes) * 100
 
-    return analysis
-
-def generate_feedback(analysis: Dict) -> str:
-    feedback = []
-    feedback.append(f"Overall pronunciation accuracy: {analysis['accuracy_percentage']:.1f}%\n")
-
-    if analysis['errors']:
-        feedback.append("Pronunciation errors:")
-        for error in analysis['errors']:
-            feedback.append(f"- At {error['timestamp']}s: Expected '{error['expected']}' "
-                            f"but heard '{error['pronounced']}'")
-
-    if analysis['missing_phonemes']:
-        feedback.append("\nMissing sounds:")
-        for missing in analysis['missing_phonemes']:
-            feedback.append(f"- Missing '{missing['phoneme']}' at {missing['timestamp']}s")
-
-    if analysis['extra_phonemes']:
-        feedback.append("\nExtra sounds:")
-        for extra in analysis['extra_phonemes']:
-            feedback.append(f"- Extra '{extra['phoneme']}' at {extra['timestamp']}s")
-
-    if analysis['timing_differences']:
-        feedback.append("\nTiming differences:")
-        for timing in analysis['timing_differences']:
-            feedback.append(f"- '{timing['phoneme']}': Teacher duration: {timing['teacher_duration']}s, "
-                            f"Student duration: {timing['student_duration']}s")
-
-    return "\n".join(feedback)
-
-# Title
-st.title("DSP Project")
+# Streamlit interface
+st.title("DSP Project with MFCC and Phoneme Analysis")
 LANGUAGE_ID = "eng"
 language = st.selectbox("Choose Language", ["English", "Egyption Arabic", "Arabic"])
 
+threshold = st.number_input("Enter Distance Threshold (0.0-1.0)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
+
+# ReferenceUtterance = st.file_uploader("Upload a Reference Utterance", 'wav')
 ReferenceUtterance = st.audio_input("Record a Reference Utterance")
 if ReferenceUtterance is not None:
     reference_audio_path = AudioPreprocessor(ReferenceUtterance)
-    st.write("Spectrogram for Reference Utterance")
-    plot_spectrogram(reference_audio_path)
+    plot_spectrogram(reference_audio_path, "Reference Utterance Spectrogram")
 
+    # TestUtterance = st.file_uploader("Upload a Test Utterance", 'wav')
     TestUtterance = st.audio_input("Record a Test Utterance")
     if TestUtterance is not None:
-        if language == "Arabic":
-            LANGUAGE_ID = "arb"
-        elif language == "English":
-            LANGUAGE_ID = "eng"
-        elif language == "Egyption Arabic":
-            LANGUAGE_ID = "arz"
+        test_audio_path = AudioPreprocessor(TestUtterance)
+        plot_spectrogram(test_audio_path, "Test Utterance Spectrogram")
+
+        reference_mfcc = extract_mfcc(reference_audio_path)
+        test_mfcc = extract_mfcc(test_audio_path)
 
         universal_recognizer, english_recognizer = LoadRecognizer()
-        test_audio_path = AudioPreprocessor(TestUtterance)
-        st.write("Spectrogram for Test Utterance")
-        plot_spectrogram(test_audio_path)
+        if universal_recognizer is None or english_recognizer is None:
+            st.stop() # Stop execution if recognizers failed to load
 
         try:
             if language == "English":
-                teacher_phonemes = recognize_phonemes(english_recognizer, reference_audio_path, LANGUAGE_ID)
-                student_phonemes = recognize_phonemes(english_recognizer, test_audio_path, LANGUAGE_ID)
+                LANGUAGE_ID = "eng"
+                ref_result = english_recognizer.recognize( reference_audio_path, LANGUAGE_ID)
+                test_result = english_recognizer.recognize( test_audio_path, LANGUAGE_ID)
             else:
-                teacher_phonemes = recognize_phonemes(universal_recognizer, reference_audio_path, LANGUAGE_ID)
-                student_phonemes = recognize_phonemes(universal_recognizer, test_audio_path, LANGUAGE_ID)
+                if language == "Arabic":
+                    LANGUAGE_ID = "arb"
+                elif language == "Egyptian Arabic":
+                    LANGUAGE_ID = "arz"
+                elif language == "IPA":
+                    LANGUAGE_ID = "ipa"
+                ref_result = universal_recognizer.recognize( reference_audio_path, LANGUAGE_ID, timestamp=True)
+                test_result = universal_recognizer.recognize( test_audio_path, LANGUAGE_ID, timestamp=True)
 
-            if teacher_phonemes and student_phonemes:
-                aligned_teacher, aligned_student = align_sequences(teacher_phonemes, student_phonemes)
-                analysis = analyze_differences(aligned_teacher, aligned_student)
-                feedback = generate_feedback(analysis)
-                st.text(feedback)
+
+            st.write("### Reference phonemes:")
+            st.write(ref_result)
+            st.write("### Test phonemes:")
+            st.write(test_result)
+
+            # distance = calculate_distance(reference_mfcc, test_mfcc)
+            # plot_distance_with_threshold(distance, threshold)
+            distance = calculate_distance(reference_mfcc, test_mfcc)
+            plot_distance_with_phonemes(distance, threshold, ref_result.strip().split('\n'), test_result.strip().split('\n')) # Pass the phonemes with timestamps
+
         except Exception as e:
-            st.error(f"Error during recognition: {e}")
+            st.error(f"Error during recognition or alignment: {e}")
