@@ -193,7 +193,7 @@ with col1:
     st.write(' ')
 
 with col2:
-    st.image("Logo.jpg", width = 200)
+    st.image("image.png", width = 200)
     
 
 with col3:
