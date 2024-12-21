@@ -142,7 +142,7 @@ def align_phonemes_with_dtw(ref_mfcc, test_mfcc, ref_phonemes_with_time, test_ph
 
 
 def plot_distance_with_aligned_phonemes(distance, threshold, ref_aligned_phonemes, test_aligned_phonemes, ref_aligned_frames, test_aligned_frames):
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(12, 10))
     above_threshold = distance > threshold
     plt.plot(np.arange(len(distance)), distance, label='Distance', color='blue')
     plt.fill_between(np.arange(len(distance)), distance, threshold, where=above_threshold, color='red', alpha=0.5, label='Above Threshold')
